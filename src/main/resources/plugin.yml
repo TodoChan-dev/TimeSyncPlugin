@@ -1,0 +1,6 @@
+name: TimeSyncPlugin
+version: '1.0.0'
+main: jp.tproject.timeSyncPlugin.TimeSyncPlugin
+api-version: '1.21'
+authors: [ T-Project ]
+description: This plugin is only used in Stellart.
