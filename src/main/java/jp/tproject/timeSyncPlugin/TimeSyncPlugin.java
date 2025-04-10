@@ -23,17 +23,14 @@ public class TimeSyncPlugin extends JavaPlugin {
     private String syncHost;       // スレーブが接続するマスターサーバーのホスト名
 
     private World world;
-    private double accumulatedTime;  // マスターサーバー用の内部カウンター
+    private long currentTime;      // 現在のゲーム内時間
     private Thread syncServerThread; // マスター用の同期サーバースレッド
-
-    // スレーブ用の内部変数
-    private double slaveAccumulatedTime;
 
     @Override
     public void onEnable() {
-        // config.yml を初期化（config.yml もプロジェクト内に用意してください）
+        // config.yml を初期化
         saveDefaultConfig();
-        dayLength   = getConfig().getInt("dayLength", 24000);
+        dayLength   = getConfig().getInt("dayLength", 48000);
         isMaster    = getConfig().getBoolean("isMaster", true);
         syncInterval= getConfig().getInt("syncInterval", 30);
         syncPort    = getConfig().getInt("syncPort", 5000);
@@ -42,15 +39,15 @@ public class TimeSyncPlugin extends JavaPlugin {
         // デフォルトのワールドを取得して、自然な時間進行を停止
         world = Bukkit.getWorlds().get(0);
         world.setGameRule(GameRule.DO_DAYLIGHT_CYCLE, false);
-        accumulatedTime = world.getTime();
+        currentTime = world.getTime();
 
         if (isMaster) {
+            // マスターサーバーの場合は時間を管理し、同期サーバーを起動
             startSyncServer();
             startMasterTimeTask();
         } else {
-            // スレーブはまずマスターと同期してからローカルで時間を更新
+            // スレーブサーバーの場合はマスターから時間を取得するだけ
             startSlaveSyncTask();
-            startSlaveTimeTask();
         }
     }
 
@@ -61,71 +58,79 @@ public class TimeSyncPlugin extends JavaPlugin {
         }
     }
 
-    // マスターサーバー：毎ティックごとに時間を更新するタスク
+    // マスターサーバー：2秒ごとに時間を更新するタスク
     private void startMasterTimeTask() {
         new BukkitRunnable() {
             @Override
             public void run() {
-                // 通常のMinecraftの1日は24000ティックだけど、
-                // 調整後の日数に合わせるための1ティックあたりの加算量を計算する
-                double increment = 24000.0 / dayLength;
-                accumulatedTime += increment;
-                long timeToSet = (long) (accumulatedTime % 24000);
-                world.setTime(timeToSet);
+                // 通常の速度の半分になるように時間を進める
+                // 通常のMinecraftでは1秒に20ティック進む
+                // 2秒ごとに実行して20ティック進めると、通常の半分の速度になる
+                currentTime = (currentTime + 20) % 24000;
+                world.setTime(currentTime);
+
+                // デバッグログ
+                getLogger().info("Master time updated to: " + currentTime);
             }
-        }.runTaskTimer(this, 1L, 1L);
+        }.runTaskTimer(this, 40L, 40L); // 40 ticks = 2 seconds
     }
 
     // マスターサーバー：外部からの接続に対して現在の時間を返すTCPサーバーを開始
     private void startSyncServer() {
         syncServerThread = new Thread(() -> {
             try (ServerSocket serverSocket = new ServerSocket(syncPort)) {
+                getLogger().info("Time sync server started on port " + syncPort);
+
                 while (!Thread.currentThread().isInterrupted()) {
                     try (Socket clientSocket = serverSocket.accept();
                          PrintWriter out = new PrintWriter(clientSocket.getOutputStream(), true)) {
-                        long currentTime = (long) (accumulatedTime % 24000);
+
+                        // 現在の時間を送信
                         out.println(currentTime);
+                        getLogger().info("Sent time " + currentTime + " to slave at " +
+                                clientSocket.getInetAddress().getHostAddress());
                     } catch (IOException e) {
-                        e.printStackTrace();
+                        getLogger().warning("Error in sync server: " + e.getMessage());
                     }
                 }
             } catch (IOException e) {
-                e.printStackTrace();
+                getLogger().severe("Failed to start sync server: " + e.getMessage());
             }
         });
+
+        syncServerThread.setDaemon(true);
         syncServerThread.start();
     }
 
-    // スレーブサーバー：マスターと同期するためのタスク（非同期で実行）
+    // スレーブサーバー：マスターと同期するためのタスク
     private void startSlaveSyncTask() {
         new BukkitRunnable() {
             @Override
             public void run() {
                 try (Socket socket = new Socket(syncHost, syncPort);
                      BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()))) {
+
                     String line = in.readLine();
                     if (line != null) {
-                        long syncedTime = Long.parseLong(line.trim());
-                        // 同期した時点の時間をローカルカウンターに反映
-                        slaveAccumulatedTime = syncedTime;
+                        try {
+                            long syncedTime = Long.parseLong(line.trim());
+
+                            // UIスレッドで時間を設定
+                            new BukkitRunnable() {
+                                @Override
+                                public void run() {
+                                    world.setTime(syncedTime);
+                                    getLogger().info("Slave time synced to: " + syncedTime);
+                                }
+                            }.runTask(TimeSyncPlugin.this);
+                        } catch (NumberFormatException e) {
+                            getLogger().warning("Received invalid time from master: " + line);
+                        }
                     }
                 } catch (Exception e) {
-                    e.printStackTrace();
+                    getLogger().warning("Failed to sync with master: " + e.getMessage());
                 }
             }
         }.runTaskTimerAsynchronously(this, 0L, syncInterval * 20L);  // syncInterval秒ごとに実行
-    }
-
-    // スレーブサーバー：同期後、ローカルで時間を進行させるタスク
-    private void startSlaveTimeTask() {
-        new BukkitRunnable() {
-            @Override
-            public void run() {
-                double increment = 24000.0 / dayLength;
-                slaveAccumulatedTime += increment;
-                long timeToSet = (long) (slaveAccumulatedTime % 24000);
-                world.setTime(timeToSet);
-            }
-        }.runTaskTimer(this, 1L, 1L);
     }
 }
