@@ -1,5 +1,5 @@
 # 1日の長さ（例：24000で通常の長さ、12000なら半分速く、48000なら半分遅く）
-dayLength: 24000
+dayLength: 48000
 
 # サーバーの役割：trueならこのサーバーがマスター。falseならスレーブ
 isMaster: true
@@ -11,4 +11,4 @@ syncInterval: 30
 syncPort: 5000
 
 # スレーブが接続するマスターのホスト名
-syncHost: "localhost"
+syncHost: "100.76.121.124"
